@@ -1,0 +1,190 @@
+(async()=>{
+ function parse(){
+   const t=document.body.innerText;
+   const res=[];
+   const re=/(?:^|\n)\s*(\d+)\s+(.+?)\s+T(\d)\s+(.+?)\s+(?:(?:NN|LL|X3|AP|FF|WC)\s+)*?(-?\d+)\s+[\d.-]+\s+(\d+)\s+[\d.]+\s+Open team/g;
+   let m;
+   while((m=re.exec(t))!==null){
+     res.push({team:m[2].trim(),racePts:+m[5],totalPts:+m[6]});
+   }
+   return res;
+ }
+
+ const trigger=[...document.querySelectorAll('button')].find(b=>
+   b.className.includes('justify-between')&&b.className.includes('border')&&/^R\d+$/.test(b.textContent.trim())
+ );
+
+ const raceNames={1:'AUS',2:'CHN',3:'JPN',4:'BHR',5:'SAU',6:'MIA',7:'CAN',8:'MON',9:'BAR',10:'AUT',11:'GBR',12:'BEL',13:'HUN',14:'NED',15:'ITA',16:'ESP',17:'AZE',18:'SGP',19:'USA',20:'MEX',21:'BRA',22:'LVG',23:'QAT',24:'ABU'};
+ const raceFullNames={1:'Australia',2:'China',3:'Japan',4:'Bahrain',5:'Saudi Arabia',6:'Miami',7:'Canada',8:'Monaco',9:'Barcelona',10:'Austria',11:'Britain',12:'Belgium',13:'Hungary',14:'Netherlands',15:'Italy',16:'Spain',17:'Azerbaijan',18:'Singapore',19:'United States',20:'Mexico City',21:'São Paulo',22:'Las Vegas',23:'Qatar',24:'Abu Dhabi'};
+
+ trigger.click();
+ await new Promise(r=>setTimeout(r,500));
+ const opts=[...document.querySelectorAll('div[role="option"], div[class*="select-none"]')].filter(d=>/^R\d+$/.test(d.textContent.trim()));
+ const rounds=opts.map(o=>+o.textContent.trim().slice(1)).sort((a,b)=>a-b);
+ document.body.click();
+ await new Promise(r=>setTimeout(r,300));
+
+ const allRaces=[];
+ const playerTotals={};
+
+ for(const rn of rounds){
+   console.log(`[F1] Selecting R${rn}...`);
+   trigger.click();
+   await new Promise(r=>setTimeout(r,500));
+   const opt=[...document.querySelectorAll('div[role="option"], div[class*="select-none"]')].find(d=>d.textContent.trim()===`R${rn}`);
+   if(!opt)continue;
+   opt.click();
+   await new Promise(r=>setTimeout(r,3000));
+   const entries=parse();
+   console.log(`[F1] R${rn}: ${entries.length} entries`);
+   const row={name:raceFullNames[rn]||`Race ${rn}`,code:raceNames[rn]||`R${rn}`,rn,pts:{},max:0};
+   for(const e of entries){
+     row.pts[e.team]=e.racePts;
+     if(e.racePts>row.max)row.max=e.racePts;
+     if(rn===rounds[rounds.length-1])playerTotals[e.team]=e.totalPts;
+   }
+   allRaces.push(row);
+ }
+
+ for(const r of allRaces)for(const t in r.pts)if(!playerTotals[t])playerTotals[t]=allRaces.reduce((s,x)=>s+(x.pts[t]||0),0);
+
+ const teams=Object.keys(playerTotals);
+ const T=teams.length;
+ const sorted=teams.sort((a,b)=>playerTotals[b]-playerTotals[a]);
+
+ // Betting
+ const RACE_BET=50,MID_BET=100,FULL_BET=250;
+ const pot_race=RACE_BET*T,pot_mid=MID_BET*T,pot_full=FULL_BET*T;
+ const raceWins={},raceMoney={},midMoney={},fullMoney={};
+ teams.forEach(t=>{raceWins[t]=0;raceMoney[t]=0;midMoney[t]=-MID_BET;fullMoney[t]=-FULL_BET});
+ for(const r of allRaces){
+   const max=Math.max(...teams.map(t=>r.pts[t]||0));
+   const winners=teams.filter(t=>(r.pts[t]||0)===max&&max>0);
+   for(const w of winners){raceWins[w]++;raceMoney[w]+=pot_race/winners.length}
+ }
+ teams.forEach(t=>{raceMoney[t]-=RACE_BET*allRaces.length});
+ midMoney[sorted[0]]+=pot_mid*0.5;midMoney[sorted[1]]+=pot_mid*0.3;midMoney[sorted[2]]+=pot_mid*0.2;
+ fullMoney[sorted[0]]+=pot_full*0.5;fullMoney[sorted[1]]+=pot_full*0.3;fullMoney[sorted[2]]+=pot_full*0.2;
+
+ // Cumulative points & gap to leader per race
+ const cumPts={};teams.forEach(t=>{cumPts[t]=[]});
+ let running={};teams.forEach(t=>{running[t]=0});
+ const gapData=[], posData=[];
+ for(const r of allRaces){
+   for(const t of teams)running[t]+=(r.pts[t]||0);
+   const maxPts=Math.max(...teams.map(t=>running[t]));
+   const rGaps={},rPos={};
+   for(const t of teams)rGaps[t]=running[t]-maxPts;
+   // Positions: sort by cumulative points descending
+   const byPts=[...teams].sort((a,b)=>running[b]-running[a]);
+   let pos=1;
+   for(let i=0;i<byPts.length;i++){
+     if(i>0&&running[byPts[i]]<running[byPts[i-1]])pos=i+1;
+     rPos[byPts[i]]=pos;
+   }
+   gapData.push({code:r.code,gaps:rGaps});
+   posData.push({code:r.code,pos:rPos});
+ }
+
+ const colors=['#e10600','#00d2be','#ffd700','#ff6b35','#4ecdc4','#a855f7','#f472b6','#22d3ee','#84cc16','#fb923c','#e879f9','#38bdf8','#facc15','#34d399','#f87171','#818cf8','#c084fc','#2dd4bf'];
+
+ // Chart builder
+ function buildChart(title,data,teams,sorted,colors,valFn,yLabels,yMin,yMax,invert){
+   const W=900,H=450,PAD={t:30,r:160,b:50,l:60};
+   const cw=W-PAD.l-PAD.r,ch=H-PAD.t-PAD.b;
+   function sx(i){return PAD.l+(i/(data.length-1||1))*cw}
+   function sy(v){
+     const norm=(v-yMin)/(yMax-yMin);
+     return invert?PAD.t+norm*ch:PAD.t+(1-norm)*ch;
+   }
+   let s=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:${W}px;background:#1a1a2e;border-radius:8px;margin-top:2rem">`;
+   // Grid
+   for(const v of yLabels){
+     const y=sy(v);
+     s+=`<line x1="${PAD.l}" y1="${y}" x2="${W-PAD.r}" y2="${y}" stroke="#2a2a3a"/>`;
+     s+=`<text x="${PAD.l-8}" y="${y+4}" fill="#888" font-size="11" text-anchor="end">${v}</text>`;
+   }
+   // X labels
+   data.forEach((d,i)=>{s+=`<text x="${sx(i)}" y="${H-PAD.b+20}" fill="#888" font-size="11" text-anchor="middle">${d.code}</text>`});
+   // Lines
+   sorted.forEach((team,ti)=>{
+     const c=colors[ti%colors.length];
+     let path='';
+     data.forEach((d,i)=>{path+=(i===0?'M':'L')+`${sx(i)},${sy(valFn(d,team))}`});
+     s+=`<path d="${path}" fill="none" stroke="${c}" stroke-width="2" opacity="0.85"/>`;
+     data.forEach((d,i)=>{s+=`<circle cx="${sx(i)}" cy="${sy(valFn(d,team))}" r="3" fill="${c}"/>`});
+     const lastY=sy(valFn(data[data.length-1],team));
+     s+=`<text x="${W-PAD.r+6}" y="${lastY+4}" fill="${c}" font-size="10">${team.substring(0,18)}</text>`;
+   });
+   s+=`<text x="${W/2}" y="18" fill="#e0e0e0" font-size="14" text-anchor="middle" font-weight="bold">${title}</text>`;
+   s+=`</svg>`;
+   return s;
+ }
+
+ // Chart 1: Gap to leader
+ const minGap=Math.min(...gapData.flatMap(d=>teams.map(t=>d.gaps[t])));
+ const yRange=Math.max(Math.abs(minGap),50);
+ const gapLabels=[];for(let v=0;v>=-yRange;v-=Math.ceil(yRange/5/10)*10)gapLabels.push(v);
+ const chart1=buildChart('Gap to Leader (0 = 1st place)',gapData,teams,sorted,colors,
+   (d,t)=>d.gaps[t],gapLabels,-yRange,0,false);
+
+ // Chart 2: Position per race
+ const posLabels=[];for(let i=1;i<=T;i++)posLabels.push(i);
+ const chart2=buildChart('League Position by Race',posData,teams,sorted,colors,
+   (d,t)=>d.pos[t],posLabels,1,T,true);
+
+ // Build HTML
+ const fmt=v=>(v>=0?'+':'')+('$'+Math.round(v));
+
+ let h=`<!DOCTYPE html><html><head><title>El_Mejor_Arrancon</title><style>
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:Segoe UI,sans-serif;background:#15151e;color:#e0e0e0;padding:2rem}
+h1{text-align:center;color:#e10600;margin-bottom:.3rem;font-size:2rem}
+.sub{text-align:center;color:#888;margin-bottom:1.5rem}
+.wrap{overflow-x:auto}table{border-collapse:collapse;width:100%}
+th{background:#e10600;color:#fff;padding:.6rem .8rem;text-align:center;position:sticky;top:0;white-space:nowrap;font-size:.85rem}
+th:first-child{text-align:left;position:sticky;left:0;z-index:2;background:#e10600}
+td{padding:.5rem .8rem;border-bottom:1px solid #2a2a3a;text-align:center;font-size:.85rem;white-space:nowrap}
+td:first-child{text-align:left;font-weight:600;position:sticky;left:0;background:#15151e;z-index:1}
+tr:hover td{background:#1e1e2e}tr:hover td:first-child{background:#252540}
+.t td{border-top:2px solid #e10600;font-weight:bold}
+.p{color:#00d2be;font-weight:bold}.b{color:#ffd700;font-weight:bold}.z{color:#555}
+.pos{color:#00d2be}.neg{color:#e10600}
+.sep td{border-top:2px solid #444;background:#1a1a2e!important}
+.sep td:first-child{background:#1a1a2e!important}
+.chart{display:flex;justify-content:center;margin:1rem auto;max-width:900px}
+</style></head><body>
+<h1>\u{1F3CE}\uFE0F El_Mejor_Arrancon</h1>
+<p class=sub>${allRaces.length} races \u2022 ${T} teams \u2022 Race $${RACE_BET} \u2022 Mid $${MID_BET} \u2022 Full $${FULL_BET} \u2022 ${new Date().toLocaleDateString()}</p>
+<div class=wrap><table><tr><th>Race</th>`;
+
+ for(const p of sorted)h+=`<th>${p}</th>`;
+ h+='</tr>';
+ for(const r of allRaces){
+   h+=`<tr><td>R${r.rn} ${r.name}</td>`;
+   for(const p of sorted){const v=r.pts[p]||0;h+=`<td class="${v===r.max&&v>0?'b':v===0?'z':''}">${v}</td>`}
+   h+='</tr>';
+ }
+ h+='<tr class=t><td>YTD Total</td>';
+ for(const p of sorted)h+=`<td class=p>${playerTotals[p]}</td>`;
+ h+='</tr>';
+ h+='<tr class=sep><td>\u{1F3C6} Races Won</td>';
+ for(const p of sorted)h+=`<td class="${raceWins[p]>0?'b':''}">${raceWins[p]}</td>`;
+ h+='</tr>';
+ h+='<tr><td>\u{1F4B0} Race $ Won/Loss</td>';
+ for(const p of sorted){const v=raceMoney[p];h+=`<td class="${v>=0?'pos':'neg'}">${fmt(v)}</td>`}
+ h+='</tr>';
+ h+='<tr><td>\u{1F4CA} Mid Season $ (proj.)</td>';
+ for(const p of sorted){const v=midMoney[p];h+=`<td class="${v>=0?'pos':'neg'}">${fmt(v)}</td>`}
+ h+='</tr>';
+ h+='<tr><td>\u{1F3C1} Full Season $ (proj.)</td>';
+ for(const p of sorted){const v=fullMoney[p];h+=`<td class="${v>=0?'pos':'neg'}">${fmt(v)}</td>`}
+ h+='</tr>';
+ h+='<tr class=t><td>\u{1F4B5} TOTAL $ Won/Loss</td>';
+ for(const p of sorted){const v=raceMoney[p]+midMoney[p]+fullMoney[p];h+=`<td class="${v>=0?'pos':'neg'}" style="font-size:1rem">${fmt(v)}</td>`}
+ h+='</tr>';
+
+ h+=`</table></div><div class=chart>${chart1}</div><div class=chart>${chart2}</div></body></html>`;
+
+ document.open();document.write(h);document.close();
+ console.log('[F1] Done!');
+})();
